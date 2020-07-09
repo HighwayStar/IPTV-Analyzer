@@ -1,0 +1,21 @@
+var config = {};
+
+config.app_path = __dirname;
+config.static_path = __dirname + '/static';
+config.favicon = __dirname + '/static/favicon-scaled.png';
+config.locales = __dirname + '/locales';
+
+config.http_port = 80;
+config.app_name = 'tvprobe';
+config.linux_user = 'pi';
+config.linux_group = 'pi';
+
+config.db_host = 'localhost';
+config.db_user = 'tvprobe';
+config.db_password = 'tvprobepasswd';
+config.db_database = 'tvprobe';
+
+
+config.log_level = 'debug';
+
+module.exports = config;

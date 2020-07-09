@@ -99,7 +99,7 @@ static const struct file_operations dl_file_ops;
 #endif
 
 static int debug  = -1;
-static int msg_level;
+static int msg_level = MPEG2TS_MSG_DEFAULT;
 module_param(debug, int, 0);
 module_param(msg_level, int, 0664);
 MODULE_PARM_DESC(debug, "Set low N bits of message level");
@@ -1122,6 +1122,14 @@ is_mpeg2ts_packet(const unsigned char *payload_ptr, uint16_t payload_len)
 }
 
 
+static uint16_t
+get_rtp_header_length(const unsigned char *payload_ptr, uint16_t payload_len)
+{
+	/* currently, only non-padded, non-extended, non-mixed RTP is supported */
+	return *payload_ptr == 0x80 ? 12 : 0;
+}
+
+
 static bool
 xt_mpeg2ts_match(const struct sk_buff *skb, struct xt_action_param *par)
 {
@@ -1131,7 +1139,9 @@ xt_mpeg2ts_match(const struct sk_buff *skb, struct xt_action_param *par)
 	struct udphdr _udph;
 	__be32 saddr, daddr;
 	uint16_t ulen;
-	uint16_t hdr_size;
+	uint16_t format;
+	uint16_t udp_hdr_size;
+	uint16_t rtp_hdr_size;
 	uint16_t payload_len;
 	const unsigned char *payload_ptr;
 
@@ -1187,18 +1197,18 @@ xt_mpeg2ts_match(const struct sk_buff *skb, struct xt_action_param *par)
 	ulen = ntohs(uh->len);
 
 	/* How much do we need to skip to access payload data */
-	hdr_size    = par->thoff + sizeof(struct udphdr);
-	payload_ptr = skb_network_header(skb) + hdr_size;
-	/* payload_ptr = skb->data + hdr_size; */
-	BUG_ON(payload_ptr != (skb->data + hdr_size));
+	udp_hdr_size = par->thoff + sizeof(struct udphdr);
+	payload_ptr = skb_network_header(skb) + udp_hdr_size;
+	/* payload_ptr = skb->data + udp_hdr_size; */
+	BUG_ON(payload_ptr != (skb->data + udp_hdr_size));
 
 	/* Different ways to determine the payload_len.  Think the
 	 * safest is to use the skb->len, as we really cannot trust
 	 * the contents of the packet.
-	  payload_len = ntohs(iph->tot_len)- hdr_size;
+	  payload_len = ntohs(iph->tot_len)- udp_hdr_size;
 	  payload_len = ulen - sizeof(struct udphdr);
 	*/
-	payload_len = skb->len - hdr_size;
+	payload_len = skb->len - udp_hdr_size;
 
 /* Not sure if we need to clone packets
 	if (skb_shared(skb))
@@ -1207,22 +1217,30 @@ xt_mpeg2ts_match(const struct sk_buff *skb, struct xt_action_param *par)
 	if (!skb_cloned(skb))
 		msg_dbg(RX_STATUS, "skb(0x%p) NOT cloned", skb);
 */
-
-	if (is_mpeg2ts_packet(payload_ptr, payload_len)) {
-		msg_dbg(PKTDATA, "Jubii - its a MPEG2TS packet");
-
-		if (!(info->flags & XT_MPEG2TS_DETECT_DROP)) {
-			/* ! --drop-detect */
-			/* Don't perform drop detection, just match mpeg2ts */
-			res = true;
+	format = info->flags & XT_MPEG2TS_FORMAT;
+	if (format == XT_MPEG2TS_FORMAT_AUTO || format == XT_MPEG2TS_FORMAT_RTP) {
+		rtp_hdr_size = get_rtp_header_length(payload_ptr, payload_len);
+		if (!rtp_hdr_size) {
+			if (format == XT_MPEG2TS_FORMAT_RTP)
+				return false;
 		} else {
-			skips =	dissect_mpeg2ts(payload_ptr, payload_len,
-						skb, uh, info);
+			payload_ptr += rtp_hdr_size;
+			payload_len -= rtp_hdr_size;
 		}
-	} else {
-		msg_dbg(PKTDATA, "Not a MPEG2 TS packet "
-			"(pkt from:%pI4 to:%pI4)", &saddr, &daddr);
+	}
+	if (!is_mpeg2ts_packet(payload_ptr, payload_len)) {
 		return false;
+	}
+
+	msg_dbg(PKTDATA, "Jubii - its a MPEG2TS packet");
+
+	if (!(info->flags & XT_MPEG2TS_DETECT_DROP)) {
+		/* ! --drop-detect */
+		/* Don't perform drop detection, just match mpeg2ts */
+		res = true;
+	} else {
+		skips =	dissect_mpeg2ts(payload_ptr, payload_len,
+					skb, uh, info);
 	}
 
 	if (info->flags & XT_MPEG2TS_MATCH_DROP)
@@ -1299,14 +1317,12 @@ static void mpeg2ts_seq_stop(struct seq_file *s, void *v)
 static int mpeg2ts_seq_show_real(struct mpeg2ts_stream *stream,
 				 struct seq_file *s, unsigned int bucket)
 {
-	int res;
-
 	if (!atomic_inc_not_zero(&stream->use)) {
 		/* If "use" is zero, then we about to be free'd */
 		return 0;
 	}
 
-	res = seq_printf(s, "bucket:%d dst:%pI4 src:%pI4 dport:%u sport:%u "
+	seq_printf(s, "bucket:%d dst:%pI4 src:%pI4 dport:%u sport:%u "
 			    "pids:%d skips:%llu discontinuity:%llu "
 			    "payload_bytes:%llu packets:%llu\n",
 			 bucket,
@@ -1323,7 +1339,7 @@ static int mpeg2ts_seq_show_real(struct mpeg2ts_stream *stream,
 
 	atomic_dec(&stream->use);
 
-	return res;
+	return seq_has_overflowed(s);
 }
 
 static int mpeg2ts_seq_show(struct seq_file *s, void *v)
@@ -1434,7 +1450,7 @@ static int __init mpeg2ts_mt_init(void)
 	 */
 	INIT_LIST_HEAD(&conn_htables);
 
-	msg_level = netif_msg_init(debug, MPEG2TS_MSG_DEFAULT);
+	msg_level = netif_msg_init(debug, msg_level);
 	msg_info(DRV, "Loading: %s", version);
 	msg_dbg(DRV, "Message level (msg_level): 0x%X", msg_level);
 

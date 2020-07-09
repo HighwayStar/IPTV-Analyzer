@@ -1,0 +1,144 @@
+This is my howto to build and setup on a Raspberry Pi.
+
+Starting with vanilla Raspbian setup (https://projects.raspberrypi.org/en/projects/raspberry-pi-setting-up/)
+
+All folowing commands are under the assumption that the software is installed as the standard 'pi' user.
+
+From the CLI execute the following commands:
+    sudo apt update
+    sudo apt-get upgrade
+
+    sudo apt-get install -y autoconf
+    sudo apt-get install -y raspberrypi-kernel-headers
+    sudo apt-get install -y libxtables-dev
+    sudo apt-get install -y libproc-daemon-perl libproc-pid-file-perl libconfig-file-perl libdata-compare-perl liblog-log4perl-perl libnet-snmp-perl liblog-dispatch-perl
+    sudo apt-get install -y mariadb-server mariadb-client
+
+    git clone https://github.com/MarcoBlijdorp/IPTV-Analyzer.git
+
+    cd IPTV-Analyzer/
+
+    ./autogen.sh
+
+    ./configure
+
+    make
+
+    sudo make install
+
+    sudo insmod iptables-module/xt_mpeg2ts.ko
+
+Prepare the iptables:
+    sudo iptables -t mangle -I PREROUTING -i eth0 -p udp -m mpeg2ts --name in_eth0
+
+And make them persistant:
+    sudo apt-get -y install iptables-persistent
+(just answer Yes to all questions)
+
+Build the perl collector
+
+    cd collector/
+
+    perl Makefile.PL
+
+    make
+    
+    sudo make install
+
+Make sure the collector settings are correct...
+    cd  /etc/iptv-analyser
+    sudo cp collector.conf.sample collector.conf
+    sudo vi /etc/iptv-analyzer/collector.conf
+    sudo cp log4perl.conf.sample log4perl.conf
+
+    cd ~/IPTV-Analyzer/collector
+
+Make the collector start at boot:
+    chmod +x scripts/iptv-collector
+    sudo ln -s /home/pi/IPTV-Analyzer/collector/scripts/iptv-collector /etc/init.d/iptv-collector
+    sudo update-rc.d iptv-collector defaults
+    cd ..
+
+Prepare the database (if used local)
+    cd database
+
+    sudo mysql -u root
+        drop database if exists tvprobe;
+        create database tvprobe;
+        grant all on tvprobe.* to 'tvprobe'@'localhost' identified by 'tvprobepasswd';
+        flush privileges;
+        exit;
+
+    sudo mysql -u root tvprobe < database-schema-latest.sql
+
+    cd ..
+
+Test the collector:
+    sudo iptv-collector
+
+Install nodejs (copied from https://www.instructables.com/id/Install-Nodejs-and-Npm-on-Raspberry-Pi/):
+    uname -a
+
+Check the armv version and copy the right down link from https://nodejs.org/en/download/. In my case https://nodejs.org/dist/v12.18.0/node-v12.18.0-linux-armv7l.tar.xz
+
+    wget https://nodejs.org/dist/v12.18.0/node-v12.18.0-linux-armv7l.tar.xz
+    tar xvf node-v12.18.0-linux-armv7l.tar.xz
+    cd node-v12.18.0-linux-armv7l
+    sudo cp -R * /usr/local/
+    cd ..
+    rm -R node-v12.18.0-linux-armv7l node-v12.18.0-linux-armv7l.tar.xz
+
+Check if everything is installed with the following commands:
+    node -v
+    npm -v
+    
+Disable apache from startup if needed:
+    sudo update-rc.d apache2 disable
+
+Prepare front-end (if used local)
+    cd nodejs
+    npm install
+    sudo npm install forever -g
+    cp config.js.sample config.js
+
+Make sure the settings in config.js are correct...
+    vi config.js
+
+Prepare log directory
+    sudo mkdir /var/log/tvprobe
+    ln -s /var/log/tvprobe logs
+
+Test front-end:
+    sudo node tvprobe.js
+
+This should start without error on port 80 (or what ever configured in config.js) kill with ctrl-C
+
+Prepare auto-start of front-end:
+    cd  scripts
+
+Make sure the path to tvprobe.js file is set correctly (DAEMON_PATH) in tvprobe
+    vi tvprobe
+
+    chmod +x tvprobe
+    sudo ln -s /home/pi/IPTV-Analyzer/nodejs/scripts/tvprobe /etc/init.d/tvprobe
+    sudo update-rc.d tvprobe defaults
+    chmod +x daily_maintenance.sh
+    crontab -e
+        0 2 * * * /home/pi/IPTV-Analyzer/nodejs/scripts/daily_maintenance.sh  > /dev/null 2>&1 
+
+Start colletor:
+    sudo /etc/init.d/iptv-collector start
+    sudo /etc/init.d/tvprobe start
+
+Log for iptables-module:
+    /var/log/kernel.log
+
+Log for iptv-collector:
+    /var/log/tvprobe.log
+
+Log for frontend:
+    /var/log/tvprobe
+
+
+
+Done!

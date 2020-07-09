@@ -1,6 +1,23 @@
 
 recent changes
 
+2020-06-10 Marco de Groot <marco@blijdorp.org>
+    * Version 0.10.0
+        
+    Merged some updates from others:
+        Able to build module for Kernel 4.5.4-1 of newer <Falien164>
+            https://github.com/netoptimizer/IPTV-Analyzer/pull/33
+ 
+        RTP support <Tilka>
+            https://github.com/Tilka/IPTV-Analyzer/commit/544bce95606fa816af414a43a3b01dd7b6abc717
+
+    My own contribution:
+        Support for Image_Graph seems to have stopped long ago and I couldn't get it to work with PHP7.
+        Instead I've build a new front-end using NodeJs using Plotly (https://plotly.com/javascript/) for the graphs.
+
+        Added a howto which worked for my Raspberry Pi4
+        
+
 2015-03-04  Jesper Dangaard Brouer <netoptimizer@brouer.com>
 
 	* Version 0.9.4.

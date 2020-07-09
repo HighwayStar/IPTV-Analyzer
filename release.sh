@@ -6,8 +6,8 @@
 #
 set -e
 NAME=iptv-analyzer
-VERSION=0.9.4
-PREV_VERSION=0.9.3
+VERSION=0.10.0
+PREV_VERSION=0.9.4
 GPGKEY="3B37BCED"
 
 echo "Creating tarball for release: $NAME-$VERSION"

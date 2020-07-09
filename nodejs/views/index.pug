@@ -1,0 +1,495 @@
+﻿doctype
+html
+    head
+        block head
+            title #{title}
+            script(src='static/utils.js')
+            script(src='static/plotly-latest.min.js')
+            link(rel='stylesheet', href='static/tvprobe.css')
+            if (favicon_loaded)
+                link(rel='icon', type='image/png', href='/static/favicon.ico')
+            div(id='logo')
+            div(id='version')
+                p
+                    span= 'version: '
+                    span #{version}
+
+    body
+        header
+            h1 #{title}
+
+        .container
+            .main-content
+                block content
+                    h2 IPTV drops statistics
+                    input(class='button', type='button', value='View by probe' onclick='byProbe()')
+                    input(class='button', type='button', value='View by channel' onclick='byChannel()')
+                    p
+                    fieldset(id='probe', style='display: none;')
+                        legend Select a probe
+                        div(class='table', id='probe_table')
+                        p
+                        input(id='probe_submit', class='button', type='button', disabled=true, value='Submit' onclick='onProbeSubmit()')
+                    fieldset(id='channel', style='display: none;')
+                        legend Select a channel
+                        select(id='channel_selector', class='button')
+                        p
+                        input(id='channel_submit', class='button', type='button', disabled=true, value='Submit' onclick='onChannelSubmit()')
+                    p
+                    fieldset(id='period', style='display: none;')
+                        legend Adjust period
+                        table
+                            tr
+                                td(class='tiny') From:
+                                td(class='date')  
+                                    input(id='date_from', class='input', type='date', onchange='onChangeDate()')
+                                td(class='small')  
+                                    input(id='time_from', class='input', onchange='onChangeTime()')
+                            tr(class='medium')  
+                                td(class='tiny')  To:
+                                td(class='date')
+                                    input(id='date_to', class='input', type='date', onchange='onChangeDate()')
+                                td(class='small')  
+                                    input(id='time_to', class='input', onchange='onChangeTime()')
+                                td(class='tiny')
+                                td(class='medium')
+                                    input(id='auto_update', type='checkbox', onchange='onChangeAutoUpdate()')
+                                    | auto update  
+                                    select(id='auto_update_selector', class='button', style='display: none;')
+                                        option(value='60000') every minute
+                                        option(value='600000') every 10 minutes
+                                        option(value='1800000') every 30 minutes
+                                        option(value='3600000') every hour
+                                    
+                        div(id='period_text')
+                        table
+                            tr
+                                td
+                                    p Aggregation interval/period (bucket size) in sec:
+                                td
+                                    input(class='tiny', id='aggregation_interval', onchange='onChangeInterval()')
+                                td(id='aggregation_interval_minutes')
+                                    p minutes
+                        table(style='display:none')
+                            tr
+                                td
+                                    p Excessive level:
+                                td
+                                    input(class='tiny', id='excessive_level')
+                                td
+                                    input(id='fix_graph', type='checkbox')
+                                    | fix graph
+                    p        
+                    h3(id='error') #{err}
+                    p
+                    div(id='loading', style='display: none;')
+                    div(id='period_table', style='display:none')
+                    div(id='bar_graph' style='width: 1080px; height: 500px; display:none')
+
+    script(type='text/javascript').
+        var selected_probe = null;
+        var auto_update_timer = null;
+        initPeriod();
+        initInterval();
+        function formatDate(date) {
+            return new Date(date.getTime() - (date.getTimezoneOffset() * 60000)).toISOString().split('T')[0];
+        }
+        function formatDateTime(date) {
+            return formatDate(date) + ', ' + date.toLocaleTimeString('en-GB');
+        }
+        function formatDuration(msec) {
+            var duration = msec / 1000;
+            var dd = Math.floor(duration / (24 * 60 * 60));
+            duration = duration %   (24 * 60 * 60);
+            var hh = Math.floor(duration / (60 * 60));
+            duration = duration % (60 * 60);
+            var mm = Math.floor(duration / 60);
+            var ss = Math.floor(duration % 60);
+            var text = '';
+            if (dd)
+                text += dd + (dd === 1 ? ' day ' : ' days ');
+            text += hh + (hh === 1 ? ' hour ' : ' hours ');
+            text += mm + (mm === 1 ? ' minute ' : ' minutes ');
+            if (ss)
+                text += ss + (ss === 1 ? ' second' : ' seconds');
+            return text;
+        }
+        function byProbe() {
+            document.getElementById('probe').style.display = '';
+            document.getElementById('channel').style.display = 'none';
+            document.getElementById('period').style.display = '';
+            document.getElementById('period_table').style.display = 'none';
+            document.getElementById('bar_graph').style.display = 'none';
+            document.getElementById('period_table').innerHTML = '';
+            ajaxRequest('v1/probes', drawProbeTable);
+            selected = null;
+            checkSubmit();
+        }
+        function byChannel() {
+            document.getElementById('probe').style.display = 'none';
+            document.getElementById('channel').style.display = '';
+            document.getElementById('period').style.display = '';
+            document.getElementById('period_table').style.display = 'none';
+            document.getElementById('bar_graph').style.display = 'none';
+            document.getElementById('probe_table').innerHTML = '';
+            document.getElementById('channel_selector').innerHTML = '';
+            ajaxRequest('v1/channels', drawChannelSelector);
+            selected = null;
+            checkSubmit();
+        }
+        function checkSubmit() {
+            document.getElementById('channel_submit').disabled = true;
+            document.getElementById('probe_submit').disabled = true;
+            if (document.getElementById('date_to').date < document.getElementById('date_from').date) {
+                document.getElementById('error').innerHTML = '\'From time\' should before \'to time\'';
+                return;
+            }
+            if ((document.getElementById('probe').style.display === '') && (!selected_probe)) {
+                document.getElementById('error').innerHTML = 'No probe selected';
+                return;
+            }
+            document.getElementById('channel_submit').disabled = false;
+            document.getElementById('probe_submit').disabled = false;
+        }
+        function onProbeClicked(probe_data, draw_graph = false) {
+            document.getElementById('error').innerHTML= '';              
+            var selected_probes = document.getElementsByClassName('selected_probe');
+            for (var count = 0; count < selected_probes.length; count++) {
+                selected_probes[count].classList.remove('selected_probe');
+            }
+            document.getElementById('probe_' +  probe_data.probe_id).classList.add('selected_probe');
+            selected_probe = probe_data;
+            checkSubmit();
+            if (draw_graph)
+                ajaxRequest('v1/buckets/channel/' + probe_data.multicast_dst + '?bucket=' +  document.getElementById('aggregation_interval').value + '&time_from=' + document.getElementById('date_from').date + '&time_to=' + document.getElementById('date_to').date + (isNaN(probe_data.probe_id) ? ''  : '&probe_id=' + probe_data.probe_id), drawBarGraph);
+        }
+        function onPeriodClicked(probe_data) {
+            for (var count = 1; count <= probe_data.count; count++) {
+                var element = document.getElementById('probe_' + probe_data.probe_id + '_period_' + count);
+                element.style.display === '' ? element.style.display = 'none' : element.style.display = '';
+            }
+        }
+        function drawBarGraph(result) {
+            if (result.buckets.length == 0) {
+               document.getElementById('error').innerHTML= 'No measurements found for this probe on these dates';
+               document.getElementById('bar_graph').style.display = 'none';
+                return;
+            }
+            var title = 'drops and skips' ;
+            if (isNaN(selected_probe.probe_id))
+                title += ' on all probes'; 
+            else
+                title += ' on probe: \'' +  selected_probe.name + '/' + selected_probe.switch + '/' + selected_probe.shortloc + '\'';
+            if (selected_probe.multicast_dst)
+                title += ' for channel: ' + selected_probe.multicast_dst;
+            var bar_graph = document.getElementById('bar_graph');
+            var width = document.getElementById('aggregation_interval').value * 1000;
+            var drops =   {
+                x: [],
+                y: [],
+                type: 'bar',
+                name: 'drops',
+                width: width,
+                marker: { color: 'red' }
+            };
+            var skips =   {
+                x: [],
+                y: [],
+                type: 'bar',
+                name: 'skips',
+                width: width,
+                marker: { color: 'blue' }
+            };
+            var packets =   {
+                x: [],
+                y: [],
+                type: 'bar',
+                name: 'payload',
+                width: width,
+                yaxis: 'y2',
+                overlaying: 'y',
+                marker: { color: 'rgba(177, 64, 8, 0.2)' }
+            };
+            var max_errors = 100;
+            var max_payload = 100;
+            for (bucket of result.buckets) {
+                drops.x.push(bucket.timestamp);
+                drops.y.push(bucket.drops);
+                skips.x.push(bucket.timestamp);
+                skips.y.push(bucket.skips);
+                packets.x.push(bucket.timestamp);
+                packets.y.push(bucket.payload_bytes / bucket.records / 1024 / 8000);
+                if (bucket.drops + bucket.skips > max_errors)
+                    max_errors = bucket.drops + bucket.skips;
+                if (bucket.payload_bytes > max_payload)
+                    max_payload = bucket.payload_bytes / bucket.records / 1024 / 8000;
+            }
+            var layout = {
+                title: title,
+                barmode: 'stack',
+                xaxis: {
+                    range: [document.getElementById('date_from').date, document.getElementById('date_to').date],
+                    type: 'date'
+                },
+                yaxis: {
+                    title: 'errors',
+                    range: [0, max_errors * 2],
+                    type: 'linear'
+                },
+                yaxis2: {
+                    title: 'payload (mb/s)',
+                    range: [0, max_payload * 1.1],
+                    overlaying: 'y',
+                    side: 'right'
+                }
+            };
+            var options = {
+                staticPlot: true
+            };
+            Plotly.newPlot( bar_graph, [packets, drops, skips], layout, options);
+
+           document.getElementById('error').innerHTML= '';
+           document.getElementById('bar_graph').style.display = '';
+
+        }
+        function channelSubmit() {
+            ajaxRequest('v1/periods/' + document.getElementById('channel_selector').value + '?time_from=' + document.getElementById('date_from').date + '&time_to=' + document.getElementById('date_to').date, drawPeriodTable);
+        }
+        function probeSubmit() {   
+            ajaxRequest('v1/buckets/id/' + selected_probe.probe_id + '?bucket=' +  document.getElementById('aggregation_interval').value + '&time_from=' + document.getElementById('date_from').date + '&time_to=' + document.getElementById('date_to').date, drawBarGraph);
+        }
+        function submit(ajax_request) {
+            if (auto_update_timer) {
+                clearTimeout(auto_update_timer);
+                auto_update_timer = null;
+                document.getElementById('channel_submit').value = 'Submit';
+                document.getElementById('probe_submit').value = 'Submit';
+                document.getElementById('auto_update_selector').disabled = false;
+                return;
+            }
+            if (document.getElementById('auto_update').checked) {
+                document.getElementById('channel_submit').value = 'Stop';
+                document.getElementById('probe_submit').value = 'Stop';
+                document.getElementById('auto_update_selector').disabled = true;
+                auto_update_timer = setInterval(function() {
+                        initPeriod();
+                        ajax_request();
+                    },
+                    document.getElementById('auto_update_selector').value
+                );
+                initPeriod();
+            }
+            ajax_request();
+        }
+        function onChannelSubmit() {
+            submit(channelSubmit);
+        }
+        function onProbeSubmit() {
+            submit(probeSubmit);
+        }
+        function onChangeDate() {
+            var from_date = new Date(new Date(document.getElementById('date_from').value).getTime() + new Date().getTimezoneOffset() * 60000);
+            from_date.setHours(document.getElementById('time_from').value.split(':')[0]);
+            from_date.setMinutes(document.getElementById('time_from').value.split(':')[1]);
+            from_date.setSeconds(document.getElementById('time_from').value.split(':')[2]);
+            document.getElementById('date_from').date = from_date.getTime();
+            var to_date = new Date(new Date(document.getElementById('date_to').value).getTime() + new Date().getTimezoneOffset() * 60000);
+            to_date.setHours(document.getElementById('time_to').value.split(':')[0]);
+            to_date.setMinutes(document.getElementById('time_to').value.split(':')[1]);
+            to_date.setSeconds(document.getElementById('time_to').value.split(':')[2]);
+            document.getElementById('date_to').date = to_date.getTime();
+            document.getElementById('auto_update').period = document.getElementById('date_to').date - document.getElementById('date_from').date;
+            document.getElementById('period_text').innerHTML =  'Interval: ' + formatDuration(document.getElementById('auto_update').period);
+        }
+        function onClickDate(input_id) {
+            var input = document.getElementById(input_id);
+            var dp = new DatePicker({dateFormat: 'y-m-d'}).show(input);
+            dp.on('change', function(date) {
+                input.value = formatDate(date);    
+                onChangeDate();
+            });
+        }
+        function onChangeTime() {
+            onChangeDate();
+        }
+        function onChangeAutoUpdate() {
+            var auto_update = document.getElementById('auto_update').checked;
+            document.getElementById('date_to').disabled = auto_update;
+            document.getElementById('time_to').disabled = auto_update;
+            document.getElementById('date_from').disabled = auto_update;
+            document.getElementById('time_from').disabled = auto_update;
+            document.getElementById('auto_update_selector').style.display = auto_update ? '' : 'none';
+        }
+        function onChangeInterval() {
+            var seconds = parseInt(document.getElementById('aggregation_interval').value);
+            if (isNaN(seconds)) {
+                seconds = 600;
+                document.getElementById('aggregation_interval').value = seconds;
+            } 
+            var text  = '';
+            if (seconds >= 60) {
+                text += Math.floor(seconds / 60) + (seconds < 120 ? ' minute' : ' minutes');
+            }
+            if (seconds % 60 != 0) {
+                if (text !== '')
+                    text += ', ';
+                text += (seconds % 60) + (seconds % 60 == 1 ? ' second' : ' seconds');
+            }
+            document.getElementById('aggregation_interval_minutes').innerHTML = '(' + text + ')';
+        }
+        function drawPeriodTable(data) {
+            if (data.periods.length == 0) {
+                document.getElementById('error').innerHTML = 'No probes found for this channel and time'; //todo put in data
+                document.getElementById('period_table').style.display = 'none';
+                document.getElementById('bar_graph').style.display = 'none';
+                return;
+            }
+            var all_probes = {
+                probe_id: 'all',
+                multicast_dst: data.periods[0].multicast_dst
+            };    
+            document.getElementById('error').innerHTML = '';
+            document.getElementById('period_table').style.display = '';
+            var table = tableInit('period_table');
+            var row = tableRowCreate(table.body);
+            tableCell(row, 'small', 'sub-periods');
+            var cell = tableCell(row, 'small', 'probe (all)');
+            cell.id = 'probe_all';
+            cell.classList.add('pointer');
+            cell.onclick = function() { onProbeClicked( all_probes, true ); };
+            tableCell(row, 'small', 'drops');
+            tableCell(row, 'small', 'skips');
+            tableCell(row, 'small', 'average sec between drops');
+            tableCell(row, 'medium', 'measurement period');
+            tableCell(row, 'medium', 'from');
+            tableCell(row, 'medium', 'to');
+            tableCell(row, 'small', 'records');
+            var combined = { };
+            for (probe of data.periods) {
+                if (combined[probe.probe_id]) {                      
+                    combined[probe.probe_id].count++;
+                    combined[probe.probe_id].drops += probe.drops;
+                    combined[probe.probe_id].skips += probe.skips;
+                    combined[probe.probe_id].records += probe.records;
+                    combined[probe.probe_id].period += probe.period;
+                    if (combined[probe.probe_id].time_min > probe.time_min)
+                        combined[probe.probe_id].time_min = probe.time_min;
+                    if (combined[probe.probe_id].time_max < probe.time_max)
+                        combined[probe.probe_id].time_max = probe.time_max;
+                }
+                else {
+                    combined[probe.probe_id] = {
+                        count: 1,
+                        probe_id: probe.probe_id,
+                        name: probe.name,
+                        switch: probe.switch,
+                        shortloc: probe.shortloc,
+                        distance: probe.distance,
+                        multicast_dst: probe.multicast_dst,
+                        time_min: probe.time_min,
+                        time_max: probe.time_max,
+                        drops: probe.drops,
+                        skips: probe.skips,
+                        records: probe.records,
+                        period: probe.period
+                    }
+                }                
+            }
+            var period_counter = 0;
+            for (probe in combined) {
+                row = tableRowCreate(table.body);
+                cell = tableCell(row, 'small', combined[probe].count);
+                cell.id = 'period_' + probe;
+                cell.probe = combined[probe];
+                cell.onclick = function() { onPeriodClicked(this.probe); };
+                cell.classList.add('pointer');
+                cell = tableCell(row, 'medium', combined[probe].name + '/' + combined[probe].switch);
+                cell.id = 'probe_' + probe;
+                cell.probe = combined[probe];
+                cell.classList.add('pointer');
+                cell.onclick = function() { onProbeClicked(this.probe, true); };
+                tableCell(row, 'small', combined[probe].drops.toString());
+                tableCell(row, 'small', combined[probe].skips.toString());
+                tableCell(row, 'small', combined[probe].drops ? Math.floor(combined[probe].period / combined[probe].drops / 1000) : 'none');
+                tableCell(row, 'medium', formatDuration(combined[probe].period));
+                tableCell(row, 'medium', formatDateTime(new Date(combined[probe].time_min)));
+                tableCell(row, 'medium', formatDateTime(new Date(combined[probe].time_max)));
+                tableCell(row, 'small', combined[probe].records);
+                var sub_counter = 1;
+                while ((period_counter < data.periods.length)  && (data.periods[period_counter].probe_id == probe)) {
+                    row = tableRowCreate(table.body);
+                    row.style.display = 'none';
+                    row.id = 'probe_' +  probe + '_period_' + sub_counter;
+                    tableCell(row, 'small', 'sub-' + sub_counter);
+                    var cell = tableCell(row, 'medium', 'measurement period');
+                    tableCell(row, 'small', data.periods[period_counter].drops.toString());
+                    tableCell(row, 'small', data.periods[period_counter].skips.toString());
+                    tableCell(row, 'small', data.periods[period_counter].drops ? Math.floor(data.periods[period_counter].period / data.periods[period_counter].drops / 1000) : 'none');
+                    tableCell(row, 'medium', formatDuration(data.periods[period_counter].period));
+                    tableCell(row, 'medium', formatDateTime(new Date(data.periods[period_counter].time_min)));
+                    tableCell(row, 'medium', formatDateTime(new Date(data.periods[period_counter].time_max)));
+                    tableCell(row, 'small', data.periods[period_counter].records);
+                    period_counter++;
+                    sub_counter++;
+                }
+            }
+            onProbeClicked(all_probes, true);
+        }
+        function drawProbeTable(data) {
+            var table = tableInit('probe_table');
+            var row = tableRowCreate(table.header);
+            tableHeaderCell(row, 'small', 'distance');
+            tableHeaderCell(row, 'small', 'name');
+            tableHeaderCell(row, 'small', 'switch');
+            tableHeaderCell(row, 'small', 'shortloc');
+            tableHeaderCell(row, 'small', 'location');
+            tableHeaderCell(row, 'small', 'desciption');
+            tableHeaderCell(row, 'tiny', 'id');
+            for (probe of data.probes) {
+                row = tableRowCreate(table.body);
+                row.classList.add('pointer');
+                row.id = 'probe_' + probe.probe_id;
+                row.probe_data = probe;
+                row.onclick = function() { onProbeClicked(this.probe_data); };
+                tableCell(row, 'small', probe.distance);
+                tableCell(row, 'small', probe.name);
+                tableCell(row, 'small', probe.switch);
+                tableCell(row, 'small', probe.shortloc);
+                tableCell(row, 'small', probe.location);
+                tableCell(row, 'small', probe.description);
+                tableCell(row, 'tiny', probe.probe_id);
+            }
+        }
+        function drawChannelSelector(data) {
+            if (data.channels.length == 0) {
+                document.getElementById('error').innerHTML = 'No channels found';
+                return;
+            }
+            var selector = document.getElementById('channel_selector');
+            checkSubmit();
+            for (channel of data.channels) {
+                var option = document.createElement('option');
+                option.text = channel.multicast_dst;
+                selector.add(option);
+            }
+        }
+        function initPeriod() {
+            var date = new Date();
+            document.getElementById('date_to').value = formatDate(date);
+            document.getElementById('time_to').value = date.toLocaleTimeString('en-GB');
+            if (document.getElementById('auto_update').period) {
+                date = new Date(date.getTime() - document.getElementById('auto_update').period);
+            }
+            else {
+                date.setDate(date.getDate() - 2);
+            }
+            document.getElementById('date_from').value = formatDate(date);
+            document.getElementById('time_from').value = date.toLocaleTimeString('en-GB');
+            onChangeDate(); 
+        }
+        function initInterval() {
+            document.getElementById('aggregation_interval').value = 3600;
+            onChangeInterval();
+        }
+
+    
