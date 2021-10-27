@@ -1310,8 +1310,8 @@ static void *mpeg2ts_seq_next(struct seq_file *s, void *v, loff_t *pos)
 		bucket = kmalloc(sizeof(unsigned int), GFP_ATOMIC);
 		if (!bucket)
 			return ERR_PTR(-ENOMEM);
-		*bucket = 0;
-		*pos    = 0;
+		*bucket = 1;
+		*pos    = 1;
 		v = bucket;
 		return bucket;
 	}
