@@ -481,10 +481,14 @@ EXPORT_SYMBOL_GPL(xtnu_ip_route_me_harder);
 
 int xtnu_skb_make_writable(struct sk_buff **pskb, unsigned int len)
 {
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0)
+	return skb_ensure_writable(*pskb, len);
+#else
 #if LINUX_VERSION_CODE <= KERNEL_VERSION(2, 6, 23)
 	return skb_make_writable(pskb, len);
 #else
 	return skb_make_writable(*pskb, len);
+#endif
 #endif
 }
 EXPORT_SYMBOL_GPL(xtnu_skb_make_writable);

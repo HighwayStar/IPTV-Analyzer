@@ -69,7 +69,11 @@ void proc_remove(struct proc_dir_entry *pde)
 
 /* Proc related */
 static struct proc_dir_entry *mpeg2ts_procdir;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,6,0)
+static const struct proc_ops dl_file_ops;
+#else
 static const struct file_operations dl_file_ops;
+#endif
 
 /* Message level instrumentation based upon the device driver message
  * levels see include/linux/netdevice.h.
@@ -353,7 +357,11 @@ struct xt_rule_mpeg2ts_conn_htable {
 	 * the running periode and 2) to detect if the rule has been
 	 * flushed between two reads.
 	 */
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5,6,0)
 	struct timespec time_created;
+#else
+	struct timespec64 time_created;
+#endif
 
 	/*TODO: Implement timer GC cleanup, to detect streams disappearing
 	  struct timer_list timer;*/	/* timer for gc */
@@ -442,7 +450,11 @@ mpeg2ts_htable_create(struct xt_mpeg2ts_mtinfo *minfo)
 	atomic_set(&hinfo->concurrency_cnt, 0);
 	hinfo->stream_not_found = 0;
 
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5,6,0)
 	getnstimeofday(&hinfo->time_created);
+#else
+	ktime_get_real_ts64(&hinfo->time_created);
+#endif
 
 	/* Generate a rule_name for proc if none given */
 	if (!minfo->rule_name || !strlen(minfo->rule_name))
@@ -790,12 +802,16 @@ conn_htable_destroy(struct xt_rule_mpeg2ts_conn_htable *ht)
 			hlist_del_rcu(&stream->node);
 			ht->count--;
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,1,0)
+			call_rcu(&stream->rcu_head, mpeg2ts_stream_free);
+#else
 			/* Have to use call_rcu(), because we cannot
 			   use synchronize_rcu() here, because we are
 			   holding a spinlock, or else we will get a
 			   "scheduling while atomic" bug.
 			*/
 			call_rcu_bh(&stream->rcu_head, mpeg2ts_stream_free);
+#endif
 		}
 	}
 	spin_unlock(&ht->lock);
@@ -1348,8 +1364,13 @@ static int mpeg2ts_seq_show(struct seq_file *s, void *v)
 	struct xt_rule_mpeg2ts_conn_htable *htable = PDE_DATA(inode);
 	unsigned int *bucket = v;
 	struct mpeg2ts_stream *stream;
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5,6,0)
 	struct timespec delta;
 	struct timespec now;
+#else
+	struct timespec64 delta;
+	struct timespec64 now;
+#endif
 	HLIST_NODE_POS;
 
 	/*
@@ -1359,8 +1380,14 @@ static int mpeg2ts_seq_show(struct seq_file *s, void *v)
 	*/
 
 	if (v == SEQ_START_TOKEN) {
+#if LINUX_VERSION_CODE < KERNEL_VERSION(5,6,0)
 		getnstimeofday(&now);
 		delta = timespec_sub(now, htable->time_created);
+#else
+		ktime_get_real_ts64(&now);
+		delta = timespec64_sub(now, htable->time_created);
+#endif
+
 
 		/* version info */
 		seq_printf(s, "# info:version module:%s version:%s\n",
@@ -1429,6 +1456,14 @@ static int mpeg2ts_proc_open(struct inode *inode, struct file *file)
 	return ret;
 }
 
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,6,0)
+static const struct proc_ops dl_file_ops = {
+	.proc_open = mpeg2ts_proc_open,
+	.proc_read = seq_read,
+	.proc_lseek = seq_lseek,
+	.proc_release = seq_release,
+};
+#else
 static const struct file_operations dl_file_ops = {
 	.owner   = THIS_MODULE,
 	.open    = mpeg2ts_proc_open,
@@ -1436,6 +1471,7 @@ static const struct file_operations dl_file_ops = {
 	.llseek  = seq_lseek,
 	.release = seq_release
 };
+#endif
 
 /*** Module init & exit ***/
 
@@ -1482,7 +1518,9 @@ static void __exit mpeg2ts_mt_exit(void)
 	remove_proc_entry(XT_MODULE_NAME, init_net.proc_net);
 
 	xt_unregister_match(&mpeg2ts_mt_reg);
-
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(5,1,0)
+	rcu_barrier();
+#else
 	/* Its important to wait for all call_rcu_bh() callbacks to
 	 * finish before this module is deallocated as the code
 	 * mpeg2ts_stream_free() is used by these callbacks.
@@ -1492,6 +1530,7 @@ static void __exit mpeg2ts_mt_exit(void)
 	 * call_rcu_bh() callbacks on all CPUs.
 	 */
 	rcu_barrier_bh();
+#endif
 }
 
 module_init(mpeg2ts_mt_init);
